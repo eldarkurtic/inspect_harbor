@@ -1,7 +1,8 @@
 """Opt-in parity check between our task loader and the ``harbor`` package.
 
-Last verified against harbor 0.23.0 (task.toml schema 1.4). Bump the pin
-below deliberately when adopting a newer Harbor release, and re-run.
+The ``Harbor parity`` workflow runs this nightly against the latest harbor
+release and records the version it compared in the job summary. The schema
+we implement is ``SUPPORTED_SCHEMA_VERSION`` in ``models.py``.
 
 Excluded by default (``--ignore=tests/manual``). It needs an environment
 with both ``inspect_harbor`` and ``harbor`` installed, which our own venv
@@ -10,7 +11,7 @@ deliberately does not have (install from outside the repo so the project's
 
     uv venv /tmp/venv-harbor
     cd /tmp && uv pip install --python /tmp/venv-harbor/bin/python \
-        "harbor==0.23.0" pytest pytest-asyncio -e <path to this checkout>
+        harbor pytest pytest-asyncio -e <path to this checkout>
     export INSPECT_HARBOR_CACHE_DIR=~/.cache/inspect_harbor/tasks
     /tmp/venv-harbor/bin/pytest tests/manual/test_harbor_parity.py -q
 
@@ -43,16 +44,27 @@ pytestmark = pytest.mark.slow
 FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "simple_task"
 
 
-def _task_dirs() -> list[Path]:
+def _cached_task_dirs() -> list[Path]:
     hub = cache_root() / "hub"
-    cached = sorted(
+    return sorted(
         p for p in hub.glob("*/*/*") if p.is_dir() and (p / "task.toml").exists()
     )
-    return [FIXTURE, *cached]
+
+
+def _task_dirs() -> list[Path]:
+    return [FIXTURE, *_cached_task_dirs()]
 
 
 def _enum_value(value: object) -> object:
     return getattr(value, "value", value)
+
+
+def test_cache_is_warm() -> None:
+    """Refuse to pass on the fixture alone: an empty cache means no comparison."""
+    assert _cached_task_dirs(), (
+        f"no hub tasks under {cache_root() / 'hub'}; warm the cache first "
+        "(scripts/parity_warm_cache.py or load a few datasets)"
+    )
 
 
 @pytest.mark.parametrize("task_dir", _task_dirs(), ids=lambda p: p.name[:40])
