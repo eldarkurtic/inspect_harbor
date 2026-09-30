@@ -26,6 +26,7 @@ from inspect_harbor._harbor.models import (
     EnvironmentConfig,
     HealthcheckConfig,
     NetworkMode,
+    TaskConfig,
 )
 from inspect_harbor._harbor.paths import (
     EnvironmentPaths,
@@ -112,7 +113,7 @@ def harbor_to_compose_config(
                     )
 
             # Network isolation applies to all services.
-            if _is_no_network(env_config):
+            if _is_no_network(harbor_task.config):
                 for service in compose_config.services.values():
                     if service.networks:
                         continue
@@ -146,7 +147,7 @@ def harbor_to_compose_config(
             mem_limit=f"{memory_mb}m" if memory_mb is not None else None,
             command="tail -f /dev/null",
             init=True,
-            network_mode="none" if _is_no_network(env_config) else "bridge",
+            network_mode="none" if _is_no_network(harbor_task.config) else "bridge",
             deploy=gpu_deploy,
             environment=resolved_env,
             healthcheck=(
@@ -393,15 +394,20 @@ def _expand_compose_vars(
     return re.sub(r"\$\{([^}]+)}", _replace, raw_yaml)
 
 
-def _is_no_network(env_config: EnvironmentConfig) -> bool:
-    """Whether an environment should run with no network access.
+def _is_no_network(config: TaskConfig) -> bool:
+    """Whether a task's container should run with no network access.
 
-    Only ``no-network`` isolates the environment. ``allowlist`` cannot be
-    enforced in a plain compose project (that's Harbor's egress sidecar), so
-    it is treated like ``public``; the loader warns about the degraded
-    fidelity. The deprecated ``allow_internet = false`` needs no special
-    handling here: Harbor's ``TaskConfig`` validator migrates it to
-    ``network_mode = no-network`` (and clears the boolean), so a legacy task
-    is isolated through the ``network_mode`` check below.
+    ``[environment].network_mode = no-network`` isolates the container. So does a task that denies network to both
+    its agent and its verifier (``[agent]`` and ``[verifier]`` ``network_mode = no-network``, as DeepSWE declares):
+    inspect_harbor runs both phases in the task's container (a ``separate`` verifier is approximated there too), so
+    one container-wide ``network_mode: none`` enforces both. ``allowlist`` cannot be enforced in a plain compose
+    project (that's Harbor's egress sidecar), so it is treated like ``public``; the loader warns about the degraded
+    fidelity. The deprecated ``allow_internet = false`` needs no special handling here: Harbor's ``TaskConfig``
+    validator migrates it to ``network_mode = no-network`` (and clears the boolean).
     """
-    return env_config.network_mode == NetworkMode.NO_NETWORK
+    if config.environment.network_mode == NetworkMode.NO_NETWORK:
+        return True
+    return (
+        config.agent.network_mode == NetworkMode.NO_NETWORK
+        and config.verifier.network_mode == NetworkMode.NO_NETWORK
+    )

@@ -1962,3 +1962,37 @@ services:
     assert healthcheck is not None
     assert healthcheck.test == ["CMD", "pg_isready"]
     assert healthcheck.retries == 7
+
+
+@pytest.mark.parametrize(
+    ("agent_mode", "verifier_mode", "expected"),
+    [
+        ("no-network", "no-network", "none"),
+        ("no-network", None, "bridge"),
+        (None, "no-network", "bridge"),
+    ],
+)
+def test_harbor_to_compose_config_agent_and_verifier_no_network(
+    agent_mode, verifier_mode, expected
+):
+    """A task that denies network to both its agent and its verifier runs its container without network."""
+    from inspect_harbor._harbor.models import AgentConfig, VerifierConfig
+
+    mock_task = Mock()
+    mock_task.paths.environment_dir = Path("/task/environment")
+    mock_env_config = Mock()
+    mock_env_config.env = {}
+    mock_env_config.cpus = 2.0
+    mock_env_config.memory_mb = 8192
+    mock_env_config.docker_image = "my-custom-image:latest"
+    mock_env_config.network_mode = "public"
+    mock_env_config.gpus = 0
+    mock_env_config.gpu_types = None
+    mock_env_config.healthcheck = None
+    mock_task.config.environment = mock_env_config
+    mock_task.config.agent = AgentConfig(network_mode=agent_mode)
+    mock_task.config.verifier = VerifierConfig(network_mode=verifier_mode)
+
+    with patch("pathlib.Path.exists", return_value=False):
+        service = harbor_to_compose_config(mock_task).services["default"]
+        assert service.network_mode == expected
