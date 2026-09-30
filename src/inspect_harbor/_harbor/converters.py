@@ -200,6 +200,7 @@ def harbor_task_to_sample(
         "verifier_env": harbor_task.config.verifier.env,
         "solution_env": harbor_task.config.solution.env,
         "verifier_user": _user_to_str(harbor_task.config.verifier.user),
+        "verifier_needs_network": _verifier_needs_network(harbor_task.config),
         "agent_user": _user_to_str(harbor_task.config.agent.user),
         "harbor_config": harbor_task.config.model_dump(),
     }
@@ -393,20 +394,37 @@ def _expand_compose_vars(
     return re.sub(r"\$\{([^}]+)}", _replace, raw_yaml)
 
 
-def _is_no_network(config: TaskConfig) -> bool:
-    """Whether a task's container should run with no network access.
+def _phase_network_mode(
+    config: TaskConfig, phase_mode: NetworkMode | None
+) -> NetworkMode:
+    """A phase's network policy: its own ``network_mode`` if set, else ``[environment].network_mode``."""
+    return phase_mode if phase_mode is not None else config.environment.network_mode
 
-    ``[environment].network_mode = no-network`` isolates the container. So does a task that denies network to both
-    its agent and its verifier (``[agent]`` and ``[verifier]`` ``network_mode = no-network``, as DeepSWE declares):
-    inspect_harbor runs both phases in the task's container (a ``separate`` verifier is approximated there too), so
-    one container-wide ``network_mode: none`` enforces both. ``allowlist`` cannot be enforced in a plain compose
-    project (that's Harbor's egress sidecar), so it is treated like ``public``; the loader warns about the degraded
-    fidelity. The deprecated ``allow_internet = false`` needs no special handling here: Harbor's ``TaskConfig``
-    validator migrates it to ``network_mode = no-network`` (and clears the boolean).
+
+def _is_no_network(config: TaskConfig) -> bool:
+    """Whether a task's container should start with no network access.
+
+    As in Harbor, ``[agent].network_mode`` and ``[verifier].network_mode`` override ``[environment].network_mode``
+    for their phase. inspect_harbor runs both phases in the task's container (a ``separate`` verifier is
+    approximated there too), and the agent phase comes first, so the container starts with ``network_mode: none``
+    whenever the agent is denied network; the scorer reconnects it when the verifier is not
+    (:func:`_verifier_needs_network`). ``allowlist`` cannot be enforced in a plain compose project (that's Harbor's
+    egress sidecar), so it is treated like ``public``; the loader warns about the degraded fidelity. The deprecated
+    ``allow_internet = false`` needs no special handling here: Harbor's ``TaskConfig`` validator migrates it to
+    ``network_mode = no-network`` (and clears the boolean).
     """
-    if config.environment.network_mode == NetworkMode.NO_NETWORK:
-        return True
     return (
-        config.agent.network_mode == NetworkMode.NO_NETWORK
-        and config.verifier.network_mode == NetworkMode.NO_NETWORK
+        _phase_network_mode(config, config.agent.network_mode) == NetworkMode.NO_NETWORK
+    )
+
+
+def _verifier_needs_network(config: TaskConfig) -> bool:
+    """Whether the verifier must get network back in a container the agent ran without it.
+
+    SWE-bench-style tasks deny network to the agent (it could fetch the upstream fix) but let the verifier download
+    dependencies the reference fix adds.
+    """
+    return _is_no_network(config) and (
+        _phase_network_mode(config, config.verifier.network_mode)
+        != NetworkMode.NO_NETWORK
     )

@@ -269,6 +269,8 @@ def test_harbor_to_compose_config_with_prebuilt_image():
     mock_env_config.gpu_types = None
     mock_env_config.healthcheck = None
     mock_task.config.environment = mock_env_config
+    mock_task.config.agent.network_mode = None
+    mock_task.config.verifier.network_mode = None
 
     with patch("pathlib.Path.exists", return_value=False):
         result = harbor_to_compose_config(mock_task)
@@ -396,6 +398,8 @@ def test_harbor_to_compose_config_compose_yaml_no_internet_overrides_network_mod
     mock_env_config.healthcheck = None
     mock_env_config.network_mode = "no-network"
     mock_task.config.environment = mock_env_config
+    mock_task.config.agent.network_mode = None
+    mock_task.config.verifier.network_mode = None
 
     compose_yaml_content = """
 services:
@@ -507,6 +511,8 @@ def test_harbor_to_compose_config_network_mode_field_no_network():
     mock_env_config.gpu_types = None
     mock_env_config.healthcheck = None
     mock_task.config.environment = mock_env_config
+    mock_task.config.agent.network_mode = None
+    mock_task.config.verifier.network_mode = None
 
     with patch("pathlib.Path.exists", return_value=False):
         result = harbor_to_compose_config(mock_task)
@@ -560,7 +566,7 @@ def test_harbor_to_compose_config_deprecated_allow_internet_isolated():
     mock_task.name = "legacy-task"
     mock_task.paths = Mock()
     mock_task.paths.environment_dir = Path("/task/environment")
-    mock_task.config.environment = config.environment
+    mock_task.config = config
 
     with patch("pathlib.Path.exists", return_value=False):
         result = harbor_to_compose_config(mock_task)
@@ -748,6 +754,8 @@ def test_harbor_task_to_sample_sandbox_spec():
     mock_env_config.gpu_types = None
     mock_env_config.healthcheck = None
     mock_task.config.environment = mock_env_config
+    mock_task.config.agent.network_mode = None
+    mock_task.config.verifier.network_mode = None
 
     mock_verifier_config = Mock()
     mock_verifier_config.timeout_sec = 60
@@ -1285,6 +1293,8 @@ def _make_multi_service_task(
     mock_task.config.environment.gpu_types = gpu_types
     mock_task.config.environment.healthcheck = None
     mock_task.config.environment.network_mode = network_mode
+    mock_task.config.agent.network_mode = None
+    mock_task.config.verifier.network_mode = None
     mock_task.config.verifier.env = {}
     mock_task.config.environment.env = {}
     return mock_task
@@ -1965,17 +1975,26 @@ services:
 
 
 @pytest.mark.parametrize(
-    ("agent_mode", "verifier_mode", "expected"),
+    ("env_mode", "agent_mode", "verifier_mode", "expected", "verifier_needs_network"),
     [
-        ("no-network", "no-network", "none"),
-        ("no-network", None, "bridge"),
-        (None, "no-network", "bridge"),
+        ("public", "no-network", "no-network", "none", False),
+        ("public", "no-network", None, "none", True),
+        ("public", "no-network", "public", "none", True),
+        ("public", None, "no-network", "bridge", False),
+        ("no-network", None, None, "none", False),
+        ("no-network", None, "public", "none", True),
+        ("no-network", "public", None, "bridge", False),
     ],
 )
-def test_harbor_to_compose_config_agent_and_verifier_no_network(
-    agent_mode, verifier_mode, expected
+def test_harbor_to_compose_config_per_phase_network_mode(
+    env_mode, agent_mode, verifier_mode, expected, verifier_needs_network
 ):
-    """A task that denies network to both its agent and its verifier runs its container without network."""
+    """``[agent]``/``[verifier]`` ``network_mode`` override ``[environment]`` for their phase, as in Harbor.
+
+    The container starts without network whenever the agent is denied it; the scorer reconnects it when the
+    verifier is not.
+    """
+    from inspect_harbor._harbor.converters import _verifier_needs_network
     from inspect_harbor._harbor.models import AgentConfig, VerifierConfig
 
     mock_task = Mock()
@@ -1985,7 +2004,7 @@ def test_harbor_to_compose_config_agent_and_verifier_no_network(
     mock_env_config.cpus = 2.0
     mock_env_config.memory_mb = 8192
     mock_env_config.docker_image = "my-custom-image:latest"
-    mock_env_config.network_mode = "public"
+    mock_env_config.network_mode = env_mode
     mock_env_config.gpus = 0
     mock_env_config.gpu_types = None
     mock_env_config.healthcheck = None
@@ -1996,3 +2015,4 @@ def test_harbor_to_compose_config_agent_and_verifier_no_network(
     with patch("pathlib.Path.exists", return_value=False):
         service = harbor_to_compose_config(mock_task).services["default"]
         assert service.network_mode == expected
+    assert _verifier_needs_network(mock_task.config) is verifier_needs_network
