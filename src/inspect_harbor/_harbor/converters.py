@@ -23,7 +23,6 @@ from inspect_ai.util._sandbox.compose import (
 )
 
 from inspect_harbor._harbor.models import (
-    EnvironmentConfig,
     HealthcheckConfig,
     NetworkMode,
     TaskConfig,
