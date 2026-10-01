@@ -16,7 +16,9 @@ from inspect_ai.tool import (
     Tool,
     ToolSource,
     bash,
+    mcp_server_http,
     mcp_server_sandbox,
+    mcp_server_sse,
     mcp_tools,
     python,
     update_plan,
@@ -37,6 +39,16 @@ from inspect_harbor._harbor.scorer import harbor_scorer
 from inspect_harbor._harbor.task_dir import HarborTask
 
 logger = logging.getLogger(__name__)
+
+# Per-call timeout for MCP tools run through a sandbox (Inspect's default is 180 s).
+# A call blocks for as long as the server works on it, and servers such as
+# tau3-bench's ``send_message_to_user`` wait on an LLM turn of their own, so this
+# is sized for a slow model under load; the sample's time limit remains the cap.
+MCP_SANDBOX_TOOL_TIMEOUT = 600
+
+_MCP_BRIDGE_SOURCE = (Path(__file__).with_name("mcp_bridge.py")).read_text(
+    encoding="utf-8"
+)
 
 
 @task
@@ -117,28 +129,6 @@ def harbor(
         dataset=samples,
         solver=harbor_agent(),
         scorer=harbor_scorer(),
-    )
-
-
-_MCP_BRIDGE_SOURCE = (Path(__file__).with_name("mcp_bridge.py")).read_text(
-    encoding="utf-8"
-)
-
-
-def _mcp_server_from_spec(spec: dict[str, Any]) -> MCPServer:
-    """The Inspect MCP client for one ``[[environment.mcp_servers]]`` entry (see ``mcp_server_specs``)."""
-    if spec["transport"] == "stdio":
-        return mcp_server_sandbox(
-            name=spec["name"],
-            command=spec["command"],
-            args=spec.get("args") or None,
-            sandbox=spec["sandbox"],
-        )
-    return mcp_server_sandbox(
-        name=spec["name"],
-        command="python3",
-        args=["-c", _MCP_BRIDGE_SOURCE, spec["url"]],
-        sandbox=spec["sandbox"],
     )
 
 
@@ -293,6 +283,30 @@ def load_harbor_tasks(
 
     raise ValueError(
         "Must specify either path, task parameters, dataset parameters, or package parameters"
+    )
+
+
+def _mcp_server_from_spec(spec: dict[str, Any]) -> MCPServer:
+    """The Inspect MCP client for one ``[[environment.mcp_servers]]`` entry (see ``mcp_server_specs``)."""
+    if spec["transport"] == "stdio":
+        return mcp_server_sandbox(
+            name=spec["name"],
+            command=spec["command"],
+            args=spec.get("args") or None,
+            sandbox=spec["sandbox"],
+            timeout=MCP_SANDBOX_TOOL_TIMEOUT,
+        )
+    if spec["sandbox"] is None:
+        # The URL is reachable from the Inspect process (no compose-network host).
+        if spec["transport"] == "sse":
+            return mcp_server_sse(name=spec["name"], url=spec["url"])
+        return mcp_server_http(name=spec["name"], url=spec["url"])
+    return mcp_server_sandbox(
+        name=spec["name"],
+        command="python3",
+        args=["-c", _MCP_BRIDGE_SOURCE, spec["url"], spec["transport"]],
+        sandbox=spec["sandbox"],
+        timeout=MCP_SANDBOX_TOOL_TIMEOUT,
     )
 
 
